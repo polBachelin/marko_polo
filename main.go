@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"regexp"
 	"runtime"
 	"strings"
 
@@ -200,6 +201,8 @@ func openReader(md []byte) error {
 }
 
 func renderHTML(md []byte) string {
+	md = preprocessMermaid(md)
+
 	mdParser := goldmark.New(
 		goldmark.WithExtensions(
 			extension.GFM,
@@ -218,6 +221,35 @@ func renderHTML(md []byte) string {
 	var buf bytes.Buffer
 	mdParser.Convert(md, &buf)
 	return buf.String()
+}
+
+// Wrap in <pre class="mermaid"> (CommonMark HTML block type 1) so blank lines
+// inside the diagram don't terminate the block — a <div> wrapper would, since
+// type 6 blocks end at the first blank line. Mermaid.js reads textContent, so
+// HTML-escaping the body is both safe and necessary.
+var mermaidFenceRe = regexp.MustCompile("(?m)^[ \\t]{0,3}```[ \\t]*mermaid\\b[^\\n]*\\n([\\s\\S]*?)\\n[ \\t]{0,3}```[ \\t]*$")
+
+func preprocessMermaid(md []byte) []byte {
+	return mermaidFenceRe.ReplaceAllFunc(md, func(match []byte) []byte {
+		sub := mermaidFenceRe.FindSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		escaped := htmlEscape(sub[1])
+		var out bytes.Buffer
+		out.WriteString("\n\n<pre class=\"mermaid\">")
+		out.Write(escaped)
+		out.WriteString("</pre>\n\n")
+		return out.Bytes()
+	})
+}
+
+func htmlEscape(b []byte) []byte {
+	return []byte(strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+	).Replace(string(b)))
 }
 
 func extractTitle(md []byte) string {
@@ -327,10 +359,60 @@ th { font-weight: 600; background: var(--code-bg); }
 img { max-width: 100%; height: auto; }
 hr { margin: 1.5em 0; border: none; border-top: 1px solid var(--border); }
 input[type="checkbox"] { margin-right: 0.5em; }
+pre.mermaid {
+  display: block;
+  max-width: 1100px;
+  margin: 1.75em auto;
+  padding: 1.25em 1em;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow-x: auto;
+  text-align: center;
+  line-height: 1.4;
+  white-space: normal;
+  font-family: inherit;
+  color: var(--secondary);
+}
+pre.mermaid:not([data-processed="true"]) {
+  font-family: "SFMono-Regular", Consolas, Menlo, monospace;
+  font-size: 0.85em;
+  text-align: left;
+  white-space: pre;
+  opacity: 0.5;
+}
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+  display: inline-block;
+}
+/* Let diagrams visually break out of the 720px column when they need more room. */
+article > pre.mermaid {
+  width: calc(100vw - 3rem);
+  max-width: 1100px;
+  margin-left: 50%;
+  transform: translateX(-50%);
+}
+@media (max-width: 800px) {
+  article > pre.mermaid {
+    width: 100%;
+    margin-left: auto;
+    transform: none;
+  }
+}
 </style>
 </head>
 <body>
 <article>` + content + `</article>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: isDark ? 'dark' : 'default',
+    securityLevel: 'loose'
+  });
+</script>
 </body>
 </html>`
 }
